@@ -8,7 +8,6 @@ on:
 
   workflow_dispatch:
 
-# Required for Azure OIDC authentication
 permissions:
   id-token: write
   contents: read
@@ -19,9 +18,13 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # Select the GitHub Environment based on the branch
     environment:
       name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_WORKSPACE: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
 
     steps:
       - name: Checkout Code
@@ -39,11 +42,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: Azure-terraform
-        run: terraform init
+        run: terraform init -input=false
 
       - name: Terraform Format Check
         working-directory: Azure-terraform
-        run: terraform fmt -check
+        run: terraform fmt -check -recursive
 
       - name: Terraform Validate
         working-directory: Azure-terraform
@@ -53,16 +56,31 @@ jobs:
         working-directory: Azure-terraform
         shell: bash
         run: |
-          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+          terraform workspace select "$TF_WORKSPACE" || \
+            terraform workspace new "$TF_WORKSPACE"
 
-          terraform workspace select "$WORKSPACE" || \
-            terraform workspace new "$WORKSPACE"
+          echo "Selected workspace: $TF_WORKSPACE"
 
-          echo "Selected Terraform workspace: $WORKSPACE"
+      - name: Generate Terraform Variables
+        working-directory: Azure-terraform
+        env:
+          TF_VARS_JSON: ${{ vars.TF_VARS_JSON }}
+        shell: bash
+        run: |
+          if [ -z "$TF_VARS_JSON" ]; then
+            echo "::error::TF_VARS_JSON is not configured in the selected GitHub Environment."
+            exit 1
+          fi
+
+          printf '%s' "$TF_VARS_JSON" > terraform.auto.tfvars.json
+
+          python -m json.tool terraform.auto.tfvars.json > /dev/null
+
+          echo "Terraform variable file generated successfully."
 
       - name: Terraform Plan
         working-directory: Azure-terraform
-        run: terraform plan -out=tfplan
+        run: terraform plan -input=false -out=tfplan
 
       - name: Upload Plan Artifact
         uses: actions/upload-artifact@v4
@@ -79,9 +97,13 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # Use the same environment as the plan job
     environment:
       name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_WORKSPACE: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
 
     steps:
       - name: Checkout Code
@@ -99,18 +121,16 @@ jobs:
 
       - name: Terraform Init
         working-directory: Azure-terraform
-        run: terraform init
+        run: terraform init -input=false
 
       - name: Select/Create Workspace
         working-directory: Azure-terraform
         shell: bash
         run: |
-          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+          terraform workspace select "$TF_WORKSPACE" || \
+            terraform workspace new "$TF_WORKSPACE"
 
-          terraform workspace select "$WORKSPACE" || \
-            terraform workspace new "$WORKSPACE"
-
-          echo "Selected Terraform workspace: $WORKSPACE"
+          echo "Selected workspace: $TF_WORKSPACE"
 
       - name: Download Plan Artifact
         uses: actions/download-artifact@v4
@@ -120,4 +140,4 @@ jobs:
 
       - name: Terraform Apply
         working-directory: Azure-terraform
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve tfplan
