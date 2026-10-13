@@ -24,7 +24,6 @@ jobs:
     env:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
-      TF_WORKSPACE: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
 
     steps:
       - name: Checkout Code
@@ -56,10 +55,15 @@ jobs:
         working-directory: Azure-terraform
         shell: bash
         run: |
-          terraform workspace select "$TF_WORKSPACE" || \
-            terraform workspace new "$TF_WORKSPACE"
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
 
-          echo "Selected workspace: $TF_WORKSPACE"
+          if terraform workspace list | sed 's/^[* ]*//' | grep -Fxq "$WORKSPACE"; then
+            terraform workspace select "$WORKSPACE"
+          else
+            terraform workspace new "$WORKSPACE"
+          fi
+
+          echo "Selected Terraform workspace: $WORKSPACE"
 
       - name: Generate Terraform Variables
         working-directory: Azure-terraform
@@ -74,7 +78,7 @@ jobs:
 
           printf '%s' "$TF_VARS_JSON" > terraform.auto.tfvars.json
 
-          python -m json.tool terraform.auto.tfvars.json > /dev/null
+          python3 -m json.tool terraform.auto.tfvars.json > /dev/null
 
           echo "Terraform variable file generated successfully."
 
@@ -103,7 +107,6 @@ jobs:
     env:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
-      TF_WORKSPACE: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
 
     steps:
       - name: Checkout Code
@@ -127,10 +130,15 @@ jobs:
         working-directory: Azure-terraform
         shell: bash
         run: |
-          terraform workspace select "$TF_WORKSPACE" || \
-            terraform workspace new "$TF_WORKSPACE"
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
 
-          echo "Selected workspace: $TF_WORKSPACE"
+          if terraform workspace list | sed 's/^[* ]*//' | grep -Fxq "$WORKSPACE"; then
+            terraform workspace select "$WORKSPACE"
+          else
+            terraform workspace new "$WORKSPACE"
+          fi
+
+          echo "Selected Terraform workspace: $WORKSPACE"
 
       - name: Download Plan Artifact
         uses: actions/download-artifact@v4
