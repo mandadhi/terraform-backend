@@ -1,0 +1,151 @@
+name: Terraform Deployment Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform Plan
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: Azure-terraform
+        run: terraform init -input=false
+
+      - name: Terraform Format Check
+        working-directory: Azure-terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: Azure-terraform
+        run: terraform validate
+
+      - name: Select/Create Workspace
+        working-directory: Azure-terraform
+        shell: bash
+        run: |
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+
+          if terraform workspace list | sed 's/^[* ]*//' | grep -Fxq "$WORKSPACE"; then
+            terraform workspace select "$WORKSPACE"
+          else
+            terraform workspace new "$WORKSPACE"
+          fi
+
+          echo "Selected Terraform workspace: $WORKSPACE"
+
+      - name: Generate Terraform Variables
+        working-directory: Azure-terraform
+        env:
+          TF_VARS_JSON: ${{ vars.TF_VARS_JSON }}
+        shell: bash
+        run: |
+          if [ -z "$TF_VARS_JSON" ]; then
+            echo "::error::TF_VARS_JSON is not configured in the selected GitHub Environment."
+            exit 1
+          fi
+
+          printf '%s' "$TF_VARS_JSON" > terraform.auto.tfvars.json
+
+          python3 -m json.tool terraform.auto.tfvars.json > /dev/null
+
+          echo "Terraform variable file generated successfully."
+
+      - name: Terraform Plan
+        working-directory: Azure-terraform
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: Azure-terraform/tfplan
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Terraform Apply
+
+    needs: terraform
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: Azure-terraform
+        run: terraform init -input=false
+
+      - name: Select/Create Workspace
+        working-directory: Azure-terraform
+        shell: bash
+        run: |
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+
+          if terraform workspace list | sed 's/^[* ]*//' | grep -Fxq "$WORKSPACE"; then
+            terraform workspace select "$WORKSPACE"
+          else
+            terraform workspace new "$WORKSPACE"
+          fi
+
+          echo "Selected Terraform workspace: $WORKSPACE"
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: Azure-terraform
+
+      - name: Terraform Apply
+        working-directory: Azure-terraform
+        run: terraform apply -input=false -auto-approve tfplan
