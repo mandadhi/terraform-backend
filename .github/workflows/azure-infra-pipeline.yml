@@ -1,0 +1,123 @@
+name: Terraform Deployment Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+
+  workflow_dispatch:
+
+# Required for Azure OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform Plan
+
+    runs-on: ubuntu-latest
+
+    # Select the GitHub Environment based on the branch
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: Azure-terraform
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: Azure-terraform
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        working-directory: Azure-terraform
+        run: terraform validate
+
+      - name: Select/Create Workspace
+        working-directory: Azure-terraform
+        shell: bash
+        run: |
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+
+          terraform workspace select "$WORKSPACE" || \
+            terraform workspace new "$WORKSPACE"
+
+          echo "Selected Terraform workspace: $WORKSPACE"
+
+      - name: Terraform Plan
+        working-directory: Azure-terraform
+        run: terraform plan -out=tfplan
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: Azure-terraform/tfplan
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Terraform Apply
+
+    needs: terraform
+
+    runs-on: ubuntu-latest
+
+    # Use the same environment as the plan job
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: Azure-terraform
+        run: terraform init
+
+      - name: Select/Create Workspace
+        working-directory: Azure-terraform
+        shell: bash
+        run: |
+          WORKSPACE="${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
+
+          terraform workspace select "$WORKSPACE" || \
+            terraform workspace new "$WORKSPACE"
+
+          echo "Selected Terraform workspace: $WORKSPACE"
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: Azure-terraform
+
+      - name: Terraform Apply
+        working-directory: Azure-terraform
+        run: terraform apply -auto-approve tfplan
